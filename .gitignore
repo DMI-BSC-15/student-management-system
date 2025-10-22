@@ -1,0 +1,6 @@
+*.log
+node_modules/
+target/
+.env
+.idea/
+__pycache__/

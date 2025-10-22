@@ -1,0 +1,1 @@
+-- Placeholder for src/main/resources/data.sql in class-service

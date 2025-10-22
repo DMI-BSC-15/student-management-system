@@ -1,0 +1,20 @@
+version: '3.9'
+services:
+  api-gateway:
+    build: ./backend/api-gateway
+    ports:
+      - "8080:8080"
+  auth-service:
+    build: ./backend/auth-service
+  results-service:
+    build: ./backend/results-service
+  finance-service:
+    build: ./backend/finance-service
+  class-service:
+    build: ./backend/class-service
+  notification-service:
+    build: ./backend/notification-service
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"

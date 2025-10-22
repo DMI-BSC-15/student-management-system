@@ -1,0 +1,1 @@
+-- Placeholder for src/main/resources/schema.sql in finance-service

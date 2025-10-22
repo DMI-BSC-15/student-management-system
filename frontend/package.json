@@ -1,0 +1,9 @@
+{
+  "name": "student-management-system-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "vite",
+    "build": "vite build",
+    "test": "vitest"
+  }
+}
