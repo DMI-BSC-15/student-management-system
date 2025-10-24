@@ -1,7 +1,59 @@
-<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.sms</groupId>
-  <artifactId>student-management-system</artifactId>
-  <version>1.0.0</version>
-  <packaging>pom</packaging>
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.sms</groupId>
+    <artifactId>student-management-system-backend</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <name>Student Management System - Backend</name>
+    <description>Backend microservices for the Student Management System</description>
+
+    <modules>
+        <module>api-gateway</module>
+        <module>auth-service</module>
+        <module>class-service</module>
+        <module>finance-service</module>
+        <module>notification-service</module>
+        <module>results-service</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring.boot.version>3.3.4</spring.boot.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Import Spring Boot dependencies for all child modules -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Spring Boot Maven plugin for submodules -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>3.3.4</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
 </project>

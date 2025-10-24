@@ -4,3 +4,5 @@ target/
 .env
 .idea/
 __pycache__/
+
+*.db
