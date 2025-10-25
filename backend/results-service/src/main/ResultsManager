@@ -1,0 +1,604 @@
+package com.example;
+
+import java.io.File;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
+
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+
+/**
+ * ResultsManager.java
+ *
+ *   it is a Terminal-based results management by group 2 :
+ * - Uses SQLite (jdbc) file "results.db" in working dir
+ * - Uses PDFBox 3.x to generate transcripts (Times font via Standard14Fonts)
+ *  Compile and  run in IntelliJ (Maven project with sqlite-jdbc and pdfbox 3.0.6).
+ */
+public class ResultsManager {
+
+    // DB file name
+    private static final String DB_URL = "jdbc:sqlite:results.db";
+    private static final Scanner scanner = new Scanner(System.in);
+
+    public static void main(String[] args) {
+        System.out.println("=== Results Management System (terminal) ===");
+        try (Connection conn = connect()) {
+            createTables(conn);
+            mainMenu(conn);
+        } catch (SQLException e) {
+            System.err.println("Database error: " + e.getMessage());
+        }
+    }
+
+    // --- DB connection ---
+    private static Connection connect() throws SQLException {
+        return DriverManager.getConnection(DB_URL);
+    }
+
+    // --- Create tables if not exist ---
+    private static void createTables(Connection conn) throws SQLException {
+        String studentsSql = """
+                CREATE TABLE IF NOT EXISTS students (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_number TEXT UNIQUE NOT NULL,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL
+                );""";
+
+        String modulesSql = """
+                CREATE TABLE IF NOT EXISTS modules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    credits INTEGER NOT NULL
+                );""";
+
+        String resultsSql = """
+                CREATE TABLE IF NOT EXISTS results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id INTEGER NOT NULL,
+                    module_id INTEGER NOT NULL,
+                    term TEXT NOT NULL,
+                    mark REAL NOT NULL,
+                    FOREIGN KEY(student_id) REFERENCES students(id),
+                    FOREIGN KEY(module_id) REFERENCES modules(id),
+                    UNIQUE(student_id, module_id, term)
+                );""";
+
+        try (Statement st = conn.createStatement()) {
+            st.execute(studentsSql);
+            st.execute(modulesSql);
+            st.execute(resultsSql);
+        }
+    }
+
+    // --- Main menu ---
+    private static void mainMenu(Connection conn) {
+        while (true) {
+            System.out.println("\nChoose an option:");
+            System.out.println("1) Add student");
+            System.out.println("2) Add module");
+            System.out.println("3) Enter / update result");
+            System.out.println("4) Compute & show GPA for student (by term)");
+            System.out.println("5) Generate transcript PDF for student");
+            System.out.println("6) Compare performance across terms (student)");
+            System.out.println("7) List students / modules / results");
+            System.out.println("8) Exit");
+            System.out.print("Enter choice: ");
+            String ch = scanner.nextLine().trim();
+            switch (ch) {
+                case "1" -> addStudent(conn);
+                case "2" -> addModule(conn);
+                case "3" -> enterOrUpdateResult(conn);
+                case "4" -> computeAndShowGPA(conn);
+                case "5" -> generateTranscriptPDF(conn);
+                case "6" -> compareAcrossTerms(conn);
+                case "7" -> listData(conn);
+                case "8" -> {
+                    System.out.println("Goodbye!");
+                    return;
+                }
+                default -> System.out.println("Invalid choice, try again.");
+            }
+        }
+    }
+
+    // --- Add student ---
+    private static void addStudent(Connection conn) {
+        try {
+            System.out.print("Student number (unique): ");
+            String sn = scanner.nextLine().trim();
+            if (sn.isEmpty()) { System.out.println("Cannot be empty."); return; }
+            System.out.print("First name: ");
+            String fn = scanner.nextLine().trim();
+            System.out.print("Last name: ");
+            String ln = scanner.nextLine().trim();
+
+            String sql = "INSERT INTO students(student_number, first_name, last_name) VALUES (?, ?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, sn);
+                ps.setString(2, fn);
+                ps.setString(3, ln);
+                ps.executeUpdate();
+                System.out.println("Student added.");
+            } catch (SQLException ex) {
+                System.err.println("Could not add student: " + ex.getMessage());
+            }
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+        }
+    }
+
+    // --- Add module ---
+    private static void addModule(Connection conn) {
+        try {
+            System.out.print("Module code (unique, e.g., CS101): ");
+            String code = scanner.nextLine().trim();
+            System.out.print("Module name: ");
+            String name = scanner.nextLine().trim();
+            System.out.print("Credits (integer): ");
+            String credsStr = scanner.nextLine().trim();
+            int credits;
+            try { credits = Integer.parseInt(credsStr); }
+            catch (NumberFormatException e) { System.out.println("Invalid credits."); return; }
+
+            String sql = "INSERT INTO modules(code, name, credits) VALUES (?, ?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, code);
+                ps.setString(2, name);
+                ps.setInt(3, credits);
+                ps.executeUpdate();
+                System.out.println("Module added.");
+            } catch (SQLException ex) {
+                System.err.println("Could not add module: " + ex.getMessage());
+            }
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+        }
+    }
+
+    // --- Enter or update a result ---
+    private static void enterOrUpdateResult(Connection conn) {
+        try {
+            Integer studentId = pickStudent(conn);
+            if (studentId == null) return;
+            Integer moduleId = pickModule(conn);
+            if (moduleId == null) return;
+            System.out.print("Term (e.g., 2024-T1 or Fall-2024): ");
+            String term = scanner.nextLine().trim();
+            System.out.print("Mark (0-100): ");
+            String markStr = scanner.nextLine().trim();
+            double mark;
+            try { mark = Double.parseDouble(markStr); }
+            catch (NumberFormatException e) { System.out.println("Invalid mark."); return; }
+
+            String update = "UPDATE results SET mark = ? WHERE student_id = ? AND module_id = ? AND term = ?";
+            try (PreparedStatement ps = conn.prepareStatement(update)) {
+                ps.setDouble(1, mark);
+                ps.setInt(2, studentId);
+                ps.setInt(3, moduleId);
+                ps.setString(4, term);
+                int rows = ps.executeUpdate();
+                if (rows > 0) {
+                    System.out.println("Result updated.");
+                    return;
+                }
+            }
+
+            String insert = "INSERT INTO results(student_id, module_id, term, mark) VALUES (?, ?, ?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(insert)) {
+                ps.setInt(1, studentId);
+                ps.setInt(2, moduleId);
+                ps.setString(3, term);
+                ps.setDouble(4, mark);
+                ps.executeUpdate();
+                System.out.println("Result saved.");
+            } catch (SQLException ex) {
+                System.err.println("Could not save result: " + ex.getMessage());
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+        }
+    }
+
+    // Helper to pick a student (shows list and asks for id)
+    private static Integer pickStudent(Connection conn) throws SQLException {
+        Map<Integer, String> map = new TreeMap<>();
+        String q = "SELECT id, student_number, first_name, last_name FROM students ORDER BY id";
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
+            System.out.println("Students:");
+            while (rs.next()) {
+                int id = rs.getInt("id");
+                String display = rs.getString("student_number") + " - " + rs.getString("first_name") + " " + rs.getString("last_name");
+                map.put(id, display);
+                System.out.printf("  %d) %s%n", id, display);
+            }
+        }
+        if (map.isEmpty()) {
+            System.out.println("No students found. Add one first.");
+            return null;
+        }
+        System.out.print("Enter student id: ");
+        String s = scanner.nextLine().trim();
+        try {
+            int id = Integer.parseInt(s);
+            if (!map.containsKey(id)) { System.out.println("Invalid student id."); return null; }
+            return id;
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid input.");
+            return null;
+        }
+    }
+
+    // Helper to pick a module
+    private static Integer pickModule(Connection conn) throws SQLException {
+        Map<Integer, String> map = new TreeMap<>();
+        String q = "SELECT id, code, name, credits FROM modules ORDER BY id";
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
+            System.out.println("Modules:");
+            while (rs.next()) {
+                int id = rs.getInt("id");
+                String display = rs.getString("code") + " - " + rs.getString("name") + " (" + rs.getInt("credits") + "cr)";
+                map.put(id, display);
+                System.out.printf("  %d) %s%n", id, display);
+            }
+        }
+        if (map.isEmpty()) {
+            System.out.println("No modules found. Add one first.");
+            return null;
+        }
+        System.out.print("Enter module id: ");
+        String s = scanner.nextLine().trim();
+        try {
+            int id = Integer.parseInt(s);
+            if (!map.containsKey(id)) { System.out.println("Invalid module id."); return null; }
+            return id;
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid input.");
+            return null;
+        }
+    }
+
+    // --- Compute GPA utilities ---
+    /**
+     * Simple grade to grade point mapping:
+     * 70-100 -> A (4.0)
+     * 60-69  -> B (3.0)
+     * 50-59  -> C (2.0)
+     * 40-49  -> D (1.0)
+     * 0-39   -> F (0.0)
+     */
+    private static double markToPoint(double mark) {
+        if (mark >= 70) return 4.0;
+        if (mark >= 60) return 3.0;
+        if (mark >= 50) return 2.0;
+        if (mark >= 40) return 1.0;
+        return 0.0;
+    }
+
+    // Compute GPA for a student in a term (weighted by module credits)
+    private static OptionalDouble computeGPA(Connection conn, int studentId, String term) throws SQLException {
+        String q = """
+                SELECT r.mark, m.credits
+                FROM results r
+                JOIN modules m ON r.module_id = m.id
+                WHERE r.student_id = ? AND r.term = ?
+                """;
+
+        try (PreparedStatement ps = conn.prepareStatement(q)) {
+            ps.setInt(1, studentId);
+            ps.setString(2, term);
+            try (ResultSet rs = ps.executeQuery()) {
+                double totalPointsTimesCredits = 0.0;
+                int totalCredits = 0;
+                boolean any = false;
+                while (rs.next()) {
+                    any = true;
+                    double mark = rs.getDouble("mark");
+                    int credits = rs.getInt("credits");
+                    double gp = markToPoint(mark);
+                    totalPointsTimesCredits += gp * credits;
+                    totalCredits += credits;
+                }
+                if (!any || totalCredits == 0) return OptionalDouble.empty();
+                return OptionalDouble.of(totalPointsTimesCredits / totalCredits);
+            }
+        }
+    }
+
+    // --- Menu option: compute and show GPA ---
+    private static void computeAndShowGPA(Connection conn) {
+        try {
+            Integer studentId = pickStudent(conn);
+            if (studentId == null) return;
+            System.out.print("Term to compute GPA for: ");
+            String term = scanner.nextLine().trim();
+            OptionalDouble gpaOpt = computeGPA(conn, studentId, term);
+            if (gpaOpt.isEmpty()) {
+                System.out.println("No results found for that term.");
+            } else {
+                double gpa = gpaOpt.getAsDouble();
+                System.out.printf("GPA for term %s: %.3f%n", term, gpa);
+            }
+        } catch (SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
+        }
+    }
+
+    // --- Generate transcript PDF ---
+    private static void generateTranscriptPDF(Connection conn) {
+        try {
+            Integer studentId = pickStudent(conn);
+            if (studentId == null) return;
+            System.out.print("Term for transcript (enter 'ALL' for all terms): ");
+            String term = scanner.nextLine().trim();
+            // retrieve student info
+            String sQ = "SELECT student_number, first_name, last_name FROM students WHERE id = ?";
+            String studentNumber, fname, lname;
+            try (PreparedStatement ps = conn.prepareStatement(sQ)) {
+                ps.setInt(1, studentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) { System.out.println("Student not found."); return; }
+                    studentNumber = rs.getString("student_number");
+                    fname = rs.getString("first_name");
+                    lname = rs.getString("last_name");
+                }
+            }
+
+            // retrieve results
+            String rQ;
+            if ("ALL".equalsIgnoreCase(term) || term.isEmpty()) {
+                rQ = """
+                        SELECT r.term, m.code, m.name, m.credits, r.mark
+                        FROM results r JOIN modules m ON r.module_id = m.id
+                        WHERE r.student_id = ?
+                        ORDER BY r.term, m.code
+                        """;
+            } else {
+                rQ = """
+                        SELECT r.term, m.code, m.name, m.credits, r.mark
+                        FROM results r JOIN modules m ON r.module_id = m.id
+                        WHERE r.student_id = ? AND r.term = ?
+                        ORDER BY m.code
+                        """;
+            }
+
+            List<TranscriptRow> rows = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(rQ)) {
+                ps.setInt(1, studentId);
+                if (!("ALL".equalsIgnoreCase(term) || term.isEmpty())) ps.setString(2, term);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        rows.add(new TranscriptRow(
+                                rs.getString("term"),
+                                rs.getString("code"),
+                                rs.getString("name"),
+                                rs.getInt("credits"),
+                                rs.getDouble("mark")
+                        ));
+                    }
+                }
+            }
+
+            if (rows.isEmpty()) {
+                System.out.println("No results found for that query.");
+                return;
+            }
+
+            // If multiple terms requested, compute each term's GPA too
+            Map<String, Double> termGpas = new LinkedHashMap<>();
+            Set<String> uniqueTerms = new LinkedHashSet<>();
+            for (TranscriptRow tr : rows) uniqueTerms.add(tr.term);
+            for (String t : uniqueTerms) {
+                OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
+                termGpas.put(t, gpaOpt.isPresent() ? gpaOpt.getAsDouble() : Double.NaN);
+            }
+
+            // Make PDF: file name: transcript_<studentNumber>_<term or ALL>.pdf
+            String safeTerm = ("ALL".equalsIgnoreCase(term) || term.isEmpty()) ? "ALL" : term.replaceAll("\\s+", "_");
+            String filename = String.format("transcript_%s_%s.pdf", studentNumber, safeTerm);
+            generatePdfFile(filename, studentNumber, fname + " " + lname, rows, termGpas);
+            System.out.println("Transcript generated: " + new File(filename).getAbsolutePath());
+
+        } catch (SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
+        } catch (IOException e) {
+            System.err.println("PDF error: " + e.getMessage());
+        }
+    }
+
+    // Helper data holder for transcript rows
+    private static class TranscriptRow {
+        final String term;
+        final String code;
+        final String name;
+        final int credits;
+        final double mark;
+        TranscriptRow(String term, String code, String name, int credits, double mark) {
+            this.term = term; this.code = code; this.name = name; this.credits = credits; this.mark = mark;
+        }
+    }
+
+    // Generate PDF using PDFBox 3.x (Standard14Fonts: Times Roman/Bold)
+    private static void generatePdfFile(String filename, String studentNumber, String studentName,
+                                        List<TranscriptRow> rows, Map<String, Double> termGpas) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+
+            PDPageContentStream cs = new PDPageContentStream(doc, page);
+            // Title
+            cs.beginText();
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 18);
+            cs.newLineAtOffset(50, 720);
+            cs.showText("Transcript");
+            cs.endText();
+
+            // Student info
+            cs.beginText();
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), 12);
+            cs.newLineAtOffset(50, 700);
+            cs.showText("Student: " + studentName + "    Number: " + studentNumber);
+            cs.endText();
+
+            // Table header
+            float y = 670;
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 12);
+            cs.beginText();
+            cs.newLineAtOffset(50, y);
+            cs.showText(String.format("%-12s %-10s %-40s %6s %8s", "Term", "Code", "Module name", "Credits", "Mark"));
+            cs.endText();
+            y -= 18;
+
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), 11);
+            for (TranscriptRow r : rows) {
+                if (y < 80) { // new page
+                    cs.close();
+                    page = new PDPage(PDRectangle.LETTER);
+                    doc.addPage(page);
+                    cs = new PDPageContentStream(doc, page);
+                    y = 720;
+                }
+                cs.beginText();
+                cs.newLineAtOffset(50, y);
+                String modName = r.name.length() > 35 ? r.name.substring(0, 32) + "..." : r.name;
+                String line = String.format("%-12s %-10s %-40s %6d %8.2f",
+                        r.term, r.code, modName, r.credits, r.mark);
+                cs.showText(line);
+                cs.endText();
+                y -= 15;
+            }
+
+            // Term GPAs
+            y -= 10;
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 12);
+            cs.beginText();
+            cs.newLineAtOffset(50, y);
+            cs.showText("Term GPAs:");
+            cs.endText();
+            y -= 16;
+            cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), 11);
+            for (Map.Entry<String, Double> e : termGpas.entrySet()) {
+                cs.beginText();
+                cs.newLineAtOffset(50, y);
+                String gpaStr = Double.isNaN(e.getValue()) ? "N/A" : String.format("%.3f", e.getValue());
+                cs.showText(String.format("%s : %s", e.getKey(), gpaStr));
+                cs.endText();
+                y -= 14;
+            }
+
+            cs.close();
+            doc.save(filename);
+        }
+    }
+
+    // --- Compare across terms for a student ---
+    private static void compareAcrossTerms(Connection conn) {
+        try {
+            Integer studentId = pickStudent(conn);
+            if (studentId == null) return;
+
+            String q = "SELECT DISTINCT term FROM results WHERE student_id = ? ORDER BY term";
+            List<String> terms = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(q)) {
+                ps.setInt(1, studentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) terms.add(rs.getString("term"));
+                }
+            }
+            if (terms.isEmpty()) {
+                System.out.println("No terms/results for that student.");
+                return;
+            }
+
+            System.out.println("Term performance:");
+            for (String t : terms) {
+                OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
+                if (gpaOpt.isPresent()) {
+                    System.out.printf("  %s -> GPA: %.3f%n", t, gpaOpt.getAsDouble());
+                } else {
+                    System.out.printf("  %s -> GPA: N/A%n", t);
+                }
+            }
+
+            if (terms.size() >= 2) {
+                double best = Double.NEGATIVE_INFINITY;
+                String bestTerm = null;
+                for (String t : terms) {
+                    OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
+                    double gpa = gpaOpt.isPresent() ? gpaOpt.getAsDouble() : Double.NEGATIVE_INFINITY;
+                    if (gpa > best) { best = gpa; bestTerm = t; }
+                }
+                if (bestTerm != null && best > Double.NEGATIVE_INFINITY) {
+                    System.out.printf("Best term: %s with GPA %.3f%n", bestTerm, best);
+                }
+            }
+
+        } catch (SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
+        }
+    }
+
+    // --- List data ---
+    private static void listData(Connection conn) {
+        try {
+            System.out.println("1) List students");
+            System.out.println("2) List modules");
+            System.out.println("3) List results (all)");
+            System.out.print("Choose: ");
+            String c = scanner.nextLine().trim();
+            switch (c) {
+                case "1" -> {
+                    String q = "SELECT id, student_number, first_name, last_name FROM students ORDER BY id";
+                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
+                        while (rs.next()) {
+                            System.out.printf("%d) %s - %s %s%n", rs.getInt("id"), rs.getString("student_number"),
+                                    rs.getString("first_name"), rs.getString("last_name"));
+                        }
+                    }
+                }
+                case "2" -> {
+                    String q = "SELECT id, code, name, credits FROM modules ORDER BY id";
+                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
+                        while (rs.next()) {
+                            System.out.printf("%d) %s - %s (%d)%n", rs.getInt("id"), rs.getString("code"),
+                                    rs.getString("name"), rs.getInt("credits"));
+                        }
+                    }
+                }
+                case "3" -> {
+                    String q = """
+                            SELECT r.id, s.student_number, s.first_name, s.last_name,
+                                   m.code, m.name, m.credits, r.term, r.mark
+                            FROM results r
+                            JOIN students s ON r.student_id = s.id
+                            JOIN modules m ON r.module_id = m.id
+                            ORDER BY s.student_number, r.term, m.code
+                            """;
+                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
+                        while (rs.next()) {
+                            System.out.printf("%d) %s | %s %s | %s (%dcr) | term: %s | mark: %.2f%n",
+                                    rs.getInt("id"),
+                                    rs.getString("student_number"),
+                                    rs.getString("first_name"), rs.getString("last_name"),
+                                    rs.getString("code"), rs.getInt("credits"),
+                                    rs.getString("term"),
+                                    rs.getDouble("mark"));
+                        }
+                    }
+                }
+                default -> System.out.println("Invalid choice.");
+            }
+        } catch (SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
+        }
+    }
+
+}
