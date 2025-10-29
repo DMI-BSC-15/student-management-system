@@ -4,6 +4,8 @@ import com.sms.classmgnt.model.Timetable;
 import com.sms.classmgnt.service.TimetableService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 
 import java.util.List;
 import java.util.Optional;
@@ -27,13 +29,22 @@ public class TimetableController {
 
     @PostMapping
     public Timetable createTimetable(@RequestBody Timetable timetable) {
-        return timetableService.saveTimetable(timetable);
+        try {
+            return timetableService.saveTimetable(timetable);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
+        }
     }
 
     @PutMapping("/{id}")
     public Timetable updateTimetable(@PathVariable Long id, @RequestBody Timetable timetable) {
-        // Let the service handle the update properly
-        return timetableService.saveTimetable(timetable);
+        // Ensure the ID is set so that validations can exclude the current record
+        timetable.setId(id);
+        try {
+            return timetableService.saveTimetable(timetable);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
+        }
     }
 
     @DeleteMapping("/{id}")
