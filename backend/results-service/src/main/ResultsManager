@@ -1,9 +1,29 @@
 package com.example;
 
-import java.io.File;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+
+import jakarta.persistence.*;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.sql.*;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.Scanner;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -13,269 +33,310 @@ import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 
 /**
- * ResultsManager.java
+ * ResultsManagement (single-file Spring Boot app)
  *
- *   it is a Terminal-based results management by group 2 :
- * - Uses SQLite (jdbc) file "results.db" in working dir
- * - Uses PDFBox 3.x to generate transcripts (Times font via Standard14Fonts)
- *  Compile and  run in IntelliJ (Maven project with sqlite-jdbc and pdfbox 3.0.6).
+ * Save as: src/main/java/com/example/results/ResultsManagement.java
+ *
+ * Notes:
+ *  - Make sure application.properties is configured for your MySQL connection.
+ *  - Build with Maven after replacing the file.
  */
+@SpringBootApplication
 public class ResultsManager {
 
-    // DB file name
-    private static final String DB_URL = "jdbc:sqlite:results.db";
-    private static final Scanner scanner = new Scanner(System.in);
-
     public static void main(String[] args) {
-        System.out.println("=== Results Management System (terminal) ===");
-        try (Connection conn = connect()) {
-            createTables(conn);
-            mainMenu(conn);
-        } catch (SQLException e) {
-            System.err.println("Database error: " + e.getMessage());
-        }
+        SpringApplication.run(ResultsManager.class, args);
     }
 
-    // --- DB connection ---
-    private static Connection connect() throws SQLException {
-        return DriverManager.getConnection(DB_URL);
-    }
 
-    // --- Create tables if not exist ---
-    private static void createTables(Connection conn) throws SQLException {
-        String studentsSql = """
-                CREATE TABLE IF NOT EXISTS students (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    student_number TEXT UNIQUE NOT NULL,
-                    first_name TEXT NOT NULL,
-                    last_name TEXT NOT NULL
-                );""";
+    @Bean
+    CommandLineRunner cliRunner(ResultsService resultsService, StudentRepository studentRepo, ModuleRepository moduleRepo, ResultRepository resultRepo) {
+        return args -> {
+            // run CLI only if --cli argument is present
+            boolean cli = Arrays.stream(args).anyMatch(a -> a.equalsIgnoreCase("--cli"));
+            if (!cli) return;
 
-        String modulesSql = """
-                CREATE TABLE IF NOT EXISTS modules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL,
-                    credits INTEGER NOT NULL
-                );""";
+            Scanner scanner = new Scanner(System.in);
+            System.out.println("=== Results Management CLI ===");
 
-        String resultsSql = """
-                CREATE TABLE IF NOT EXISTS results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    student_id INTEGER NOT NULL,
-                    module_id INTEGER NOT NULL,
-                    term TEXT NOT NULL,
-                    mark REAL NOT NULL,
-                    FOREIGN KEY(student_id) REFERENCES students(id),
-                    FOREIGN KEY(module_id) REFERENCES modules(id),
-                    UNIQUE(student_id, module_id, term)
-                );""";
-
-        try (Statement st = conn.createStatement()) {
-            st.execute(studentsSql);
-            st.execute(modulesSql);
-            st.execute(resultsSql);
-        }
-    }
-
-    // --- Main menu ---
-    private static void mainMenu(Connection conn) {
-        while (true) {
-            System.out.println("\nChoose an option:");
-            System.out.println("1) Add student");
-            System.out.println("2) Add module");
-            System.out.println("3) Enter / update result");
-            System.out.println("4) Compute & show GPA for student (by term)");
-            System.out.println("5) Generate transcript PDF for student");
-            System.out.println("6) Compare performance across terms (student)");
-            System.out.println("7) List students / modules / results");
-            System.out.println("8) Exit");
-            System.out.print("Enter choice: ");
-            String ch = scanner.nextLine().trim();
-            switch (ch) {
-                case "1" -> addStudent(conn);
-                case "2" -> addModule(conn);
-                case "3" -> enterOrUpdateResult(conn);
-                case "4" -> computeAndShowGPA(conn);
-                case "5" -> generateTranscriptPDF(conn);
-                case "6" -> compareAcrossTerms(conn);
-                case "7" -> listData(conn);
-                case "8" -> {
-                    System.out.println("Goodbye!");
-                    return;
-                }
-                default -> System.out.println("Invalid choice, try again.");
-            }
-        }
-    }
-
-    // --- Add student ---
-    private static void addStudent(Connection conn) {
-        try {
-            System.out.print("Student number (unique): ");
-            String sn = scanner.nextLine().trim();
-            if (sn.isEmpty()) { System.out.println("Cannot be empty."); return; }
-            System.out.print("First name: ");
-            String fn = scanner.nextLine().trim();
-            System.out.print("Last name: ");
-            String ln = scanner.nextLine().trim();
-
-            String sql = "INSERT INTO students(student_number, first_name, last_name) VALUES (?, ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setString(1, sn);
-                ps.setString(2, fn);
-                ps.setString(3, ln);
-                ps.executeUpdate();
-                System.out.println("Student added.");
-            } catch (SQLException ex) {
-                System.err.println("Could not add student: " + ex.getMessage());
-            }
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-        }
-    }
-
-    // --- Add module ---
-    private static void addModule(Connection conn) {
-        try {
-            System.out.print("Module code (unique, e.g., CS101): ");
-            String code = scanner.nextLine().trim();
-            System.out.print("Module name: ");
-            String name = scanner.nextLine().trim();
-            System.out.print("Credits (integer): ");
-            String credsStr = scanner.nextLine().trim();
-            int credits;
-            try { credits = Integer.parseInt(credsStr); }
-            catch (NumberFormatException e) { System.out.println("Invalid credits."); return; }
-
-            String sql = "INSERT INTO modules(code, name, credits) VALUES (?, ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setString(1, code);
-                ps.setString(2, name);
-                ps.setInt(3, credits);
-                ps.executeUpdate();
-                System.out.println("Module added.");
-            } catch (SQLException ex) {
-                System.err.println("Could not add module: " + ex.getMessage());
-            }
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-        }
-    }
-
-    // --- Enter or update a result ---
-    private static void enterOrUpdateResult(Connection conn) {
-        try {
-            Integer studentId = pickStudent(conn);
-            if (studentId == null) return;
-            Integer moduleId = pickModule(conn);
-            if (moduleId == null) return;
-            System.out.print("Term (e.g., 2024-T1 or Fall-2024): ");
-            String term = scanner.nextLine().trim();
-            System.out.print("Mark (0-100): ");
-            String markStr = scanner.nextLine().trim();
-            double mark;
-            try { mark = Double.parseDouble(markStr); }
-            catch (NumberFormatException e) { System.out.println("Invalid mark."); return; }
-
-            String update = "UPDATE results SET mark = ? WHERE student_id = ? AND module_id = ? AND term = ?";
-            try (PreparedStatement ps = conn.prepareStatement(update)) {
-                ps.setDouble(1, mark);
-                ps.setInt(2, studentId);
-                ps.setInt(3, moduleId);
-                ps.setString(4, term);
-                int rows = ps.executeUpdate();
-                if (rows > 0) {
-                    System.out.println("Result updated.");
-                    return;
+            outer: while (true) {
+                System.out.println("\nChoose an option:");
+                System.out.println("1) Add student");
+                System.out.println("2) Add module");
+                System.out.println("3) Enter / update result");
+                System.out.println("4) Compute & show GPA for student (by term)");
+                System.out.println("5) Generate transcript PDF for student (saved to working dir)");
+                System.out.println("6) List students / modules / results");
+                System.out.println("7) Exit CLI");
+                System.out.print("Enter choice: ");
+                String ch = scanner.nextLine().trim();
+                try {
+                    switch (ch) {
+                        case "1" -> {
+                            System.out.print("Student number: ");
+                            String sn = scanner.nextLine().trim();
+                            System.out.print("First name: ");
+                            String fn = scanner.nextLine().trim();
+                            System.out.print("Last name: ");
+                            String ln = scanner.nextLine().trim();
+                            Student s = resultsService.addStudent(sn, fn, ln);
+                            System.out.println("Added student id=" + s.getId());
+                        }
+                        case "2" -> {
+                            System.out.print("Module code: ");
+                            String code = scanner.nextLine().trim();
+                            System.out.print("Module name: ");
+                            String name = scanner.nextLine().trim();
+                            System.out.print("Credits: ");
+                            int credits = Integer.parseInt(scanner.nextLine().trim());
+                            Module m = resultsService.addModule(code, name, credits);
+                            System.out.println("Added module id=" + m.getId());
+                        }
+                        case "3" -> {
+                            System.out.println("Students:");
+                            studentRepo.findAll().forEach(s -> System.out.printf("%d) %s - %s%n", s.getId(), s.getStudentNumber(), s.getFullName()));
+                            System.out.print("Student id: "); int sid = Integer.parseInt(scanner.nextLine().trim());
+                            System.out.println("Modules:");
+                            moduleRepo.findAll().forEach(m -> System.out.printf("%d) %s - %s (%dcr)%n", m.getId(), m.getCode(), m.getName(), m.getCredits()));
+                            System.out.print("Module id: "); int mid = Integer.parseInt(scanner.nextLine().trim());
+                            System.out.print("Term: "); String term = scanner.nextLine().trim();
+                            System.out.print("Mark: "); double mark = Double.parseDouble(scanner.nextLine().trim());
+                            ResultEntity r = resultsService.enterOrUpdateResult(sid, mid, term, mark);
+                            System.out.println("Saved result id=" + r.getId());
+                        }
+                        case "4" -> {
+                            System.out.println("Students:");
+                            studentRepo.findAll().forEach(s -> System.out.printf("%d) %s - %s%n", s.getId(), s.getStudentNumber(), s.getFullName()));
+                            System.out.print("Student id: "); int sid = Integer.parseInt(scanner.nextLine().trim());
+                            System.out.print("Term: "); String term = scanner.nextLine().trim();
+                            OptionalDouble gpa = resultsService.computeGPA(sid, term);
+                            if (gpa.isPresent()) System.out.printf("GPA for %s: %.3f%n", term, gpa.getAsDouble());
+                            else System.out.println("No results for that term.");
+                        }
+                        case "5" -> {
+                            System.out.println("Students:");
+                            studentRepo.findAll().forEach(s -> System.out.printf("%d) %s - %s%n", s.getId(), s.getStudentNumber(), s.getFullName()));
+                            System.out.print("Student id: "); int sid = Integer.parseInt(scanner.nextLine().trim());
+                            System.out.print("Term (or ALL): "); String term = scanner.nextLine().trim();
+                            byte[] pdf = resultsService.generateTranscriptPdf(sid, term.isBlank() ? "ALL" : term);
+                            String filename = String.format("transcript_%d_%s.pdf", sid, (term.isBlank() ? "ALL" : term).replaceAll("\\s+","_"));
+                            java.nio.file.Files.write(java.nio.file.Path.of(filename), pdf);
+                            System.out.println("Transcript saved: " + filename);
+                        }
+                        case "6" -> {
+                            System.out.println("Students:");
+                            studentRepo.findAll().forEach(s -> System.out.printf("%d) %s - %s%n", s.getId(), s.getStudentNumber(), s.getFullName()));
+                            System.out.println("\nModules:");
+                            moduleRepo.findAll().forEach(m -> System.out.printf("%d) %s - %s (%dcr)%n", m.getId(), m.getCode(), m.getName(), m.getCredits()));
+                            System.out.println("\nResults:");
+                            resultRepo.findAll().forEach(rr -> System.out.printf("%d) student=%s module=%s term=%s mark=%.2f%n",
+                                    rr.getId(), rr.getStudent().getStudentNumber(), rr.getModule().getCode(), rr.getTerm(), rr.getMark()));
+                        }
+                        case "7" -> { System.out.println("Exiting CLI..."); break outer; }
+                        default -> System.out.println("Invalid choice");
+                    }
+                } catch (Exception ex) {
+                    System.err.println("Error: " + ex.getMessage());
                 }
             }
 
-            String insert = "INSERT INTO results(student_id, module_id, term, mark) VALUES (?, ?, ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(insert)) {
-                ps.setInt(1, studentId);
-                ps.setInt(2, moduleId);
-                ps.setString(3, term);
-                ps.setDouble(4, mark);
-                ps.executeUpdate();
-                System.out.println("Result saved.");
-            } catch (SQLException ex) {
-                System.err.println("Could not save result: " + ex.getMessage());
-            }
+            System.out.println("CLI finished. Shutting down application.");
+            // stop the Spring app so it does not keep the server running
+            System.exit(0);
+        };
+    }
 
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
+
+
+    // Optional: seed sample data when DB empty
+    @Bean
+    CommandLineRunner seedData(StudentRepository studentRepo, ModuleRepository moduleRepo, ResultRepository resultRepo) {
+        return args -> {
+            if (studentRepo.count() == 0 && moduleRepo.count() == 0) {
+                Student s1 = new Student("S1001", "Alice", "Mwale");
+                Student s2 = new Student("S1002", "Bob", "Phiri");
+                studentRepo.saveAll(List.of(s1, s2));
+
+                Module m1 = new Module("CS101", "Intro to Programming", 3);
+                Module m2 = new Module("MT101", "Discrete Mathematics", 3);
+                Module m3 = new Module("EN101", "English", 2);
+                moduleRepo.saveAll(List.of(m1, m2, m3));
+
+                resultRepo.saveAll(List.of(
+                        new ResultEntity(s1, m1, "2024-T1", 78.0),
+                        new ResultEntity(s1, m2, "2024-T1", 65.0),
+                        new ResultEntity(s1, m3, "2024-T1", 55.0),
+                        new ResultEntity(s2, m1, "2024-T1", 48.0),
+                        new ResultEntity(s2, m2, "2024-T1", 39.0)
+                ));
+            }
+        };
+    }
+}
+
+/* ============================
+   Entities (top-level, package-private)
+   ============================ */
+
+@Entity
+@Table(name = "students")
+class Student {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id;
+
+    @Column(name = "student_number", unique = true, nullable = false)
+    private String studentNumber;
+
+    @Column(name = "first_name", nullable = false)
+    private String firstName;
+
+    @Column(name = "last_name", nullable = false)
+    private String lastName;
+
+    public Student() {}
+    public Student(String studentNumber, String firstName, String lastName) {
+        this.studentNumber = studentNumber;
+        this.firstName = firstName;
+        this.lastName = lastName;
+    }
+
+    public Integer getId() { return id; }
+    public String getStudentNumber() { return studentNumber; }
+    public void setStudentNumber(String studentNumber) { this.studentNumber = studentNumber; }
+    public String getFirstName() { return firstName; }
+    public void setFirstName(String firstName) { this.firstName = firstName; }
+    public String getLastName() { return lastName; }
+    public void setLastName(String lastName) { this.lastName = lastName; }
+    public String getFullName() { return firstName + " " + lastName; }
+}
+
+@Entity
+@Table(name = "modules")
+class Module {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id;
+
+    @Column(name = "code", unique = true, nullable = false)
+    private String code;
+
+    @Column(name = "name", nullable = false)
+    private String name;
+
+    @Column(name = "credits", nullable = false)
+    private Integer credits;
+
+    public Module() {}
+    public Module(String code, String name, Integer credits) { this.code = code; this.name = name; this.credits = credits; }
+
+    public Integer getId() { return id; }
+    public String getCode() { return code; }
+    public void setCode(String code) { this.code = code; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public Integer getCredits() { return credits; }
+    public void setCredits(Integer credits) { this.credits = credits; }
+}
+
+@Entity
+@Table(name = "results",
+        uniqueConstraints = @UniqueConstraint(columnNames = {"student_id", "module_id", "term"}))
+class ResultEntity {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id;
+
+    @ManyToOne(optional = false, fetch = FetchType.EAGER)
+    @JoinColumn(name = "student_id")
+    private Student student;
+
+    @ManyToOne(optional = false, fetch = FetchType.EAGER)
+    @JoinColumn(name = "module_id")
+    private Module module;
+
+    @Column(name = "term", nullable = false)
+    private String term;
+
+    @Column(name = "mark", nullable = false)
+    private Double mark;
+
+    public ResultEntity() {}
+    public ResultEntity(Student student, Module module, String term, Double mark) {
+        this.student = student; this.module = module; this.term = term; this.mark = mark;
+    }
+
+    public Integer getId() { return id; }
+    public Student getStudent() { return student; }
+    public Module getModule() { return module; }
+    public String getTerm() { return term; }
+    public Double getMark() { return mark; }
+    public void setStudent(Student student) { this.student = student; }
+    public void setModule(Module module) { this.module = module; }
+    public void setTerm(String term) { this.term = term; }
+    public void setMark(Double mark) { this.mark = mark; }
+}
+
+/* ============================
+   Repositories (package-private top-level)
+   ============================ */
+
+interface StudentRepository extends JpaRepository<Student, Integer> {
+    Optional<Student> findByStudentNumber(String studentNumber);
+}
+
+interface ModuleRepository extends JpaRepository<Module, Integer> {
+    Optional<Module> findByCode(String code);
+}
+
+interface ResultRepository extends JpaRepository<ResultEntity, Integer> {
+    // Spring Data derives queries by property path (student.id => findByStudentId...)
+    List<ResultEntity> findByStudentIdAndTerm(Integer studentId, String term);
+    List<ResultEntity> findByStudentId(Integer studentId);
+    Optional<ResultEntity> findByStudentIdAndModuleIdAndTerm(Integer studentId, Integer moduleId, String term);
+}
+
+/* ============================
+   Service
+   ============================ */
+
+@Service
+@Transactional
+class ResultsService {
+    private final StudentRepository studentRepo;
+    private final ModuleRepository moduleRepo;
+    private final ResultRepository resultRepo;
+
+    @Autowired
+    public ResultsService(StudentRepository studentRepo, ModuleRepository moduleRepo, ResultRepository resultRepo) {
+        this.studentRepo = studentRepo;
+        this.moduleRepo = moduleRepo;
+        this.resultRepo = resultRepo;
+    }
+
+    public Student addStudent(String studentNumber, String firstName, String lastName) {
+        Student s = new Student(studentNumber, firstName, lastName);
+        return studentRepo.save(s);
+    }
+
+    public Module addModule(String code, String name, int credits) {
+        Module m = new Module(code, name, credits);
+        return moduleRepo.save(m);
+    }
+
+    public ResultEntity enterOrUpdateResult(Integer studentId, Integer moduleId, String term, Double mark) {
+        Optional<ResultEntity> existing = resultRepo.findByStudentIdAndModuleIdAndTerm(studentId, moduleId, term);
+        if (existing.isPresent()) {
+            ResultEntity r = existing.get();
+            r.setMark(mark);
+            return resultRepo.save(r);
+        } else {
+            Student s = studentRepo.findById(studentId).orElseThrow(() -> new NoSuchElementException("Student not found"));
+            Module m = moduleRepo.findById(moduleId).orElseThrow(() -> new NoSuchElementException("Module not found"));
+            ResultEntity r = new ResultEntity(s, m, term, mark);
+            return resultRepo.save(r);
         }
     }
 
-    // Helper to pick a student (shows list and asks for id)
-    private static Integer pickStudent(Connection conn) throws SQLException {
-        Map<Integer, String> map = new TreeMap<>();
-        String q = "SELECT id, student_number, first_name, last_name FROM students ORDER BY id";
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
-            System.out.println("Students:");
-            while (rs.next()) {
-                int id = rs.getInt("id");
-                String display = rs.getString("student_number") + " - " + rs.getString("first_name") + " " + rs.getString("last_name");
-                map.put(id, display);
-                System.out.printf("  %d) %s%n", id, display);
-            }
-        }
-        if (map.isEmpty()) {
-            System.out.println("No students found. Add one first.");
-            return null;
-        }
-        System.out.print("Enter student id: ");
-        String s = scanner.nextLine().trim();
-        try {
-            int id = Integer.parseInt(s);
-            if (!map.containsKey(id)) { System.out.println("Invalid student id."); return null; }
-            return id;
-        } catch (NumberFormatException e) {
-            System.out.println("Invalid input.");
-            return null;
-        }
-    }
-
-    // Helper to pick a module
-    private static Integer pickModule(Connection conn) throws SQLException {
-        Map<Integer, String> map = new TreeMap<>();
-        String q = "SELECT id, code, name, credits FROM modules ORDER BY id";
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
-            System.out.println("Modules:");
-            while (rs.next()) {
-                int id = rs.getInt("id");
-                String display = rs.getString("code") + " - " + rs.getString("name") + " (" + rs.getInt("credits") + "cr)";
-                map.put(id, display);
-                System.out.printf("  %d) %s%n", id, display);
-            }
-        }
-        if (map.isEmpty()) {
-            System.out.println("No modules found. Add one first.");
-            return null;
-        }
-        System.out.print("Enter module id: ");
-        String s = scanner.nextLine().trim();
-        try {
-            int id = Integer.parseInt(s);
-            if (!map.containsKey(id)) { System.out.println("Invalid module id."); return null; }
-            return id;
-        } catch (NumberFormatException e) {
-            System.out.println("Invalid input.");
-            return null;
-        }
-    }
-
-    // --- Compute GPA utilities ---
-    /**
-     * Simple grade to grade point mapping:
-     * 70-100 -> A (4.0)
-     * 60-69  -> B (3.0)
-     * 50-59  -> C (2.0)
-     * 40-49  -> D (1.0)
-     * 0-39   -> F (0.0)
-     */
-    private static double markToPoint(double mark) {
+    // grade point mapping
+    private double markToPoint(double mark) {
         if (mark >= 70) return 4.0;
         if (mark >= 60) return 3.0;
         if (mark >= 50) return 2.0;
@@ -283,172 +344,67 @@ public class ResultsManager {
         return 0.0;
     }
 
-    // Compute GPA for a student in a term (weighted by module credits)
-    private static OptionalDouble computeGPA(Connection conn, int studentId, String term) throws SQLException {
-        String q = """
-                SELECT r.mark, m.credits
-                FROM results r
-                JOIN modules m ON r.module_id = m.id
-                WHERE r.student_id = ? AND r.term = ?
-                """;
-
-        try (PreparedStatement ps = conn.prepareStatement(q)) {
-            ps.setInt(1, studentId);
-            ps.setString(2, term);
-            try (ResultSet rs = ps.executeQuery()) {
-                double totalPointsTimesCredits = 0.0;
-                int totalCredits = 0;
-                boolean any = false;
-                while (rs.next()) {
-                    any = true;
-                    double mark = rs.getDouble("mark");
-                    int credits = rs.getInt("credits");
-                    double gp = markToPoint(mark);
-                    totalPointsTimesCredits += gp * credits;
-                    totalCredits += credits;
-                }
-                if (!any || totalCredits == 0) return OptionalDouble.empty();
-                return OptionalDouble.of(totalPointsTimesCredits / totalCredits);
-            }
+    public OptionalDouble computeGPA(Integer studentId, String term) {
+        List<ResultEntity> results = resultRepo.findByStudentIdAndTerm(studentId, term);
+        if (results.isEmpty()) return OptionalDouble.empty();
+        double totalPointsTimesCredits = 0.0;
+        int totalCredits = 0;
+        for (ResultEntity r : results) {
+            double gp = markToPoint(r.getMark());
+            int credits = r.getModule().getCredits();
+            totalPointsTimesCredits += gp * credits;
+            totalCredits += credits;
         }
+        if (totalCredits == 0) return OptionalDouble.empty();
+        return OptionalDouble.of(totalPointsTimesCredits / totalCredits);
     }
 
-    // --- Menu option: compute and show GPA ---
-    private static void computeAndShowGPA(Connection conn) {
-        try {
-            Integer studentId = pickStudent(conn);
-            if (studentId == null) return;
-            System.out.print("Term to compute GPA for: ");
-            String term = scanner.nextLine().trim();
-            OptionalDouble gpaOpt = computeGPA(conn, studentId, term);
-            if (gpaOpt.isEmpty()) {
-                System.out.println("No results found for that term.");
-            } else {
-                double gpa = gpaOpt.getAsDouble();
-                System.out.printf("GPA for term %s: %.3f%n", term, gpa);
-            }
-        } catch (SQLException e) {
-            System.err.println("DB error: " + e.getMessage());
-        }
+    public List<ResultEntity> getResultsForStudent(Integer studentId) {
+        return resultRepo.findByStudentId(studentId);
     }
 
-    // --- Generate transcript PDF ---
-    private static void generateTranscriptPDF(Connection conn) {
-        try {
-            Integer studentId = pickStudent(conn);
-            if (studentId == null) return;
-            System.out.print("Term for transcript (enter 'ALL' for all terms): ");
-            String term = scanner.nextLine().trim();
-            // retrieve student info
-            String sQ = "SELECT student_number, first_name, last_name FROM students WHERE id = ?";
-            String studentNumber, fname, lname;
-            try (PreparedStatement ps = conn.prepareStatement(sQ)) {
-                ps.setInt(1, studentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) { System.out.println("Student not found."); return; }
-                    studentNumber = rs.getString("student_number");
-                    fname = rs.getString("first_name");
-                    lname = rs.getString("last_name");
-                }
-            }
-
-            // retrieve results
-            String rQ;
-            if ("ALL".equalsIgnoreCase(term) || term.isEmpty()) {
-                rQ = """
-                        SELECT r.term, m.code, m.name, m.credits, r.mark
-                        FROM results r JOIN modules m ON r.module_id = m.id
-                        WHERE r.student_id = ?
-                        ORDER BY r.term, m.code
-                        """;
-            } else {
-                rQ = """
-                        SELECT r.term, m.code, m.name, m.credits, r.mark
-                        FROM results r JOIN modules m ON r.module_id = m.id
-                        WHERE r.student_id = ? AND r.term = ?
-                        ORDER BY m.code
-                        """;
-            }
-
-            List<TranscriptRow> rows = new ArrayList<>();
-            try (PreparedStatement ps = conn.prepareStatement(rQ)) {
-                ps.setInt(1, studentId);
-                if (!("ALL".equalsIgnoreCase(term) || term.isEmpty())) ps.setString(2, term);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        rows.add(new TranscriptRow(
-                                rs.getString("term"),
-                                rs.getString("code"),
-                                rs.getString("name"),
-                                rs.getInt("credits"),
-                                rs.getDouble("mark")
-                        ));
-                    }
-                }
-            }
-
-            if (rows.isEmpty()) {
-                System.out.println("No results found for that query.");
-                return;
-            }
-
-            // If multiple terms requested, compute each term's GPA too
-            Map<String, Double> termGpas = new LinkedHashMap<>();
-            Set<String> uniqueTerms = new LinkedHashSet<>();
-            for (TranscriptRow tr : rows) uniqueTerms.add(tr.term);
-            for (String t : uniqueTerms) {
-                OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
-                termGpas.put(t, gpaOpt.isPresent() ? gpaOpt.getAsDouble() : Double.NaN);
-            }
-
-            // Make PDF: file name: transcript_<studentNumber>_<term or ALL>.pdf
-            String safeTerm = ("ALL".equalsIgnoreCase(term) || term.isEmpty()) ? "ALL" : term.replaceAll("\\s+", "_");
-            String filename = String.format("transcript_%s_%s.pdf", studentNumber, safeTerm);
-            generatePdfFile(filename, studentNumber, fname + " " + lname, rows, termGpas);
-            System.out.println("Transcript generated: " + new File(filename).getAbsolutePath());
-
-        } catch (SQLException e) {
-            System.err.println("DB error: " + e.getMessage());
-        } catch (IOException e) {
-            System.err.println("PDF error: " + e.getMessage());
-        }
+    public List<String> getTermsForStudent(Integer studentId) {
+        return resultRepo.findByStudentId(studentId).stream()
+                .map(ResultEntity::getTerm)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
     }
 
-    // Helper data holder for transcript rows
-    private static class TranscriptRow {
-        final String term;
-        final String code;
-        final String name;
-        final int credits;
-        final double mark;
-        TranscriptRow(String term, String code, String name, int credits, double mark) {
-            this.term = term; this.code = code; this.name = name; this.credits = credits; this.mark = mark;
+    public byte[] generateTranscriptPdf(Integer studentId, String term) throws IOException {
+        Student s = studentRepo.findById(studentId).orElseThrow(() -> new NoSuchElementException("Student not found"));
+        List<ResultEntity> rows;
+        if (term == null || term.isBlank() || "ALL".equalsIgnoreCase(term)) {
+            rows = resultRepo.findByStudentId(studentId);
+        } else {
+            rows = resultRepo.findByStudentIdAndTerm(studentId, term);
         }
-    }
+        if (rows.isEmpty()) throw new NoSuchElementException("No results for that query");
 
-    // Generate PDF using PDFBox 3.x (Standard14Fonts: Times Roman/Bold)
-    private static void generatePdfFile(String filename, String studentNumber, String studentName,
-                                        List<TranscriptRow> rows, Map<String, Double> termGpas) throws IOException {
+        Map<String, Double> termGpas = new LinkedHashMap<>();
+        List<String> terms = rows.stream().map(ResultEntity::getTerm).distinct().sorted().collect(Collectors.toList());
+        for (String t : terms) {
+            OptionalDouble gpa = computeGPA(studentId, t);
+            termGpas.put(t, gpa.isPresent() ? gpa.getAsDouble() : Double.NaN);
+        }
+
         try (PDDocument doc = new PDDocument()) {
             PDPage page = new PDPage(PDRectangle.LETTER);
             doc.addPage(page);
 
             PDPageContentStream cs = new PDPageContentStream(doc, page);
-            // Title
             cs.beginText();
             cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 18);
             cs.newLineAtOffset(50, 720);
             cs.showText("Transcript");
             cs.endText();
 
-            // Student info
             cs.beginText();
             cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), 12);
             cs.newLineAtOffset(50, 700);
-            cs.showText("Student: " + studentName + "    Number: " + studentNumber);
+            cs.showText("Student: " + s.getFullName() + "    Number: " + s.getStudentNumber());
             cs.endText();
 
-            // Table header
             float y = 670;
             cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 12);
             cs.beginText();
@@ -458,8 +414,8 @@ public class ResultsManager {
             y -= 18;
 
             cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), 11);
-            for (TranscriptRow r : rows) {
-                if (y < 80) { // new page
+            for (ResultEntity r : rows) {
+                if (y < 80) {
                     cs.close();
                     page = new PDPage(PDRectangle.LETTER);
                     doc.addPage(page);
@@ -468,15 +424,15 @@ public class ResultsManager {
                 }
                 cs.beginText();
                 cs.newLineAtOffset(50, y);
-                String modName = r.name.length() > 35 ? r.name.substring(0, 32) + "..." : r.name;
+                String modName = r.getModule().getName();
+                if (modName.length() > 35) modName = modName.substring(0, 32) + "...";
                 String line = String.format("%-12s %-10s %-40s %6d %8.2f",
-                        r.term, r.code, modName, r.credits, r.mark);
+                        r.getTerm(), r.getModule().getCode(), modName, r.getModule().getCredits(), r.getMark());
                 cs.showText(line);
                 cs.endText();
                 y -= 15;
             }
 
-            // Term GPAs
             y -= 10;
             cs.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD), 12);
             cs.beginText();
@@ -495,110 +451,114 @@ public class ResultsManager {
             }
 
             cs.close();
-            doc.save(filename);
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            return baos.toByteArray();
         }
     }
+}
 
-    // --- Compare across terms for a student ---
-    private static void compareAcrossTerms(Connection conn) {
+/* ============================
+   REST Controller
+   ============================ */
+
+@RestController
+@RequestMapping("/api")
+class ResultsController {
+
+    private final ResultsService service;
+    private final StudentRepository studentRepo;
+    private final ModuleRepository moduleRepo;
+
+    @Autowired
+    public ResultsController(ResultsService service, StudentRepository studentRepo, ModuleRepository moduleRepo) {
+        this.service = service;
+        this.studentRepo = studentRepo;
+        this.moduleRepo = moduleRepo;
+    }
+
+    // Students
+    @PostMapping("/students")
+    public Student addStudent(@RequestBody Map<String, String> body) {
+        String sn = body.get("studentNumber");
+        String fn = body.get("firstName");
+        String ln = body.get("lastName");
+        return service.addStudent(sn, fn, ln);
+    }
+
+    @GetMapping("/students")
+    public List<Student> listStudents() { return studentRepo.findAll(); }
+
+    @GetMapping("/students/{id}")
+    public Student getStudent(@PathVariable Integer id) { return studentRepo.findById(id).orElseThrow(() -> new NoSuchElementException("Student not found")); }
+
+    // Modules
+    @PostMapping("/modules")
+    public Module addModule(@RequestBody Map<String, Object> body) {
+        String code = (String) body.get("code");
+        String name = (String) body.get("name");
+        Integer credits = (Integer) (body.get("credits") instanceof Integer ? body.get("credits") : Integer.valueOf(body.get("credits").toString()));
+        return service.addModule(code, name, credits);
+    }
+
+    @GetMapping("/modules")
+    public List<Module> listModules() { return moduleRepo.findAll(); }
+
+    // Results
+    @PostMapping("/results")
+    public ResultEntity addOrUpdateResult(@RequestBody Map<String, Object> body) {
+        Integer studentId = (Integer) (body.get("studentId") instanceof Integer ? body.get("studentId") : Integer.valueOf(body.get("studentId").toString()));
+        Integer moduleId = (Integer) (body.get("moduleId") instanceof Integer ? body.get("moduleId") : Integer.valueOf(body.get("moduleId").toString()));
+        String term = (String) body.get("term");
+        Double mark = Double.valueOf(body.get("mark").toString());
+        return service.enterOrUpdateResult(studentId, moduleId, term, mark);
+    }
+
+    @GetMapping("/students/{id}/results")
+    public List<Map<String,Object>> getStudentResults(@PathVariable Integer id) {
+        List<ResultEntity> results = service.getResultsForStudent(id);
+        return results.stream().map(r -> {
+            Map<String,Object> m = new LinkedHashMap<>();
+            m.put("id", r.getId());
+            m.put("studentId", r.getStudent().getId());
+            m.put("studentNumber", r.getStudent().getStudentNumber());
+            m.put("moduleId", r.getModule().getId());
+            m.put("moduleCode", r.getModule().getCode());
+            m.put("moduleName", r.getModule().getName());
+            m.put("credits", r.getModule().getCredits());
+            m.put("term", r.getTerm());
+            m.put("mark", r.getMark());
+            return m;
+        }).collect(Collectors.toList());
+    }
+
+    @GetMapping("/students/{id}/gpa")
+    public Map<String,Object> getGpa(@PathVariable Integer id, @RequestParam String term) {
+        OptionalDouble gpa = service.computeGPA(id, term);
+        Map<String,Object> m = new HashMap<>();
+        m.put("studentId", id);
+        m.put("term", term);
+        m.put("gpa", gpa.isPresent() ? gpa.getAsDouble() : null);
+        return m;
+    }
+
+    @GetMapping("/students/{id}/terms")
+    public List<String> getTerms(@PathVariable Integer id) { return service.getTermsForStudent(id); }
+
+    @GetMapping("/students/{id}/transcript")
+    public ResponseEntity<byte[]> transcriptPdf(@PathVariable Integer id, @RequestParam(defaultValue = "ALL") String term) {
         try {
-            Integer studentId = pickStudent(conn);
-            if (studentId == null) return;
-
-            String q = "SELECT DISTINCT term FROM results WHERE student_id = ? ORDER BY term";
-            List<String> terms = new ArrayList<>();
-            try (PreparedStatement ps = conn.prepareStatement(q)) {
-                ps.setInt(1, studentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) terms.add(rs.getString("term"));
-                }
-            }
-            if (terms.isEmpty()) {
-                System.out.println("No terms/results for that student.");
-                return;
-            }
-
-            System.out.println("Term performance:");
-            for (String t : terms) {
-                OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
-                if (gpaOpt.isPresent()) {
-                    System.out.printf("  %s -> GPA: %.3f%n", t, gpaOpt.getAsDouble());
-                } else {
-                    System.out.printf("  %s -> GPA: N/A%n", t);
-                }
-            }
-
-            if (terms.size() >= 2) {
-                double best = Double.NEGATIVE_INFINITY;
-                String bestTerm = null;
-                for (String t : terms) {
-                    OptionalDouble gpaOpt = computeGPA(conn, studentId, t);
-                    double gpa = gpaOpt.isPresent() ? gpaOpt.getAsDouble() : Double.NEGATIVE_INFINITY;
-                    if (gpa > best) { best = gpa; bestTerm = t; }
-                }
-                if (bestTerm != null && best > Double.NEGATIVE_INFINITY) {
-                    System.out.printf("Best term: %s with GPA %.3f%n", bestTerm, best);
-                }
-            }
-
-        } catch (SQLException e) {
-            System.err.println("DB error: " + e.getMessage());
+            byte[] pdf = service.generateTranscriptPdf(id, term);
+            String filename = String.format("transcript_%d_%s.pdf", id, term.replaceAll("\\s+","_"));
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.APPLICATION_PDF)
+                    .body(pdf);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
-
-    // --- List data ---
-    private static void listData(Connection conn) {
-        try {
-            System.out.println("1) List students");
-            System.out.println("2) List modules");
-            System.out.println("3) List results (all)");
-            System.out.print("Choose: ");
-            String c = scanner.nextLine().trim();
-            switch (c) {
-                case "1" -> {
-                    String q = "SELECT id, student_number, first_name, last_name FROM students ORDER BY id";
-                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
-                        while (rs.next()) {
-                            System.out.printf("%d) %s - %s %s%n", rs.getInt("id"), rs.getString("student_number"),
-                                    rs.getString("first_name"), rs.getString("last_name"));
-                        }
-                    }
-                }
-                case "2" -> {
-                    String q = "SELECT id, code, name, credits FROM modules ORDER BY id";
-                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
-                        while (rs.next()) {
-                            System.out.printf("%d) %s - %s (%d)%n", rs.getInt("id"), rs.getString("code"),
-                                    rs.getString("name"), rs.getInt("credits"));
-                        }
-                    }
-                }
-                case "3" -> {
-                    String q = """
-                            SELECT r.id, s.student_number, s.first_name, s.last_name,
-                                   m.code, m.name, m.credits, r.term, r.mark
-                            FROM results r
-                            JOIN students s ON r.student_id = s.id
-                            JOIN modules m ON r.module_id = m.id
-                            ORDER BY s.student_number, r.term, m.code
-                            """;
-                    try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(q)) {
-                        while (rs.next()) {
-                            System.out.printf("%d) %s | %s %s | %s (%dcr) | term: %s | mark: %.2f%n",
-                                    rs.getInt("id"),
-                                    rs.getString("student_number"),
-                                    rs.getString("first_name"), rs.getString("last_name"),
-                                    rs.getString("code"), rs.getInt("credits"),
-                                    rs.getString("term"),
-                                    rs.getDouble("mark"));
-                        }
-                    }
-                }
-                default -> System.out.println("Invalid choice.");
-            }
-        } catch (SQLException e) {
-            System.err.println("DB error: " + e.getMessage());
-        }
-    }
-
 }
